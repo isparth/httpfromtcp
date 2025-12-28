@@ -81,7 +81,7 @@ func main() {
 		ch := getLinesChannel(conn)
 
 		for line := range ch {
-			fmt.Printf("%s \n", line)
+			fmt.Printf("%s\n", strings.TrimSpace(line))
 		}
 
 	}
