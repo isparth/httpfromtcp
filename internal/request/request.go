@@ -1,7 +1,6 @@
 package request
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -21,8 +20,19 @@ var (
 	versionRegex = regexp.MustCompile(`^HTTP/(\d+\.\d+)$`)
 )
 
+// ParserState is our custom "enum" type
+type ParserState int
+
+const (
+	// StateInitialized will be 0
+	Initialized ParserState = iota
+	// StateDone will be 1
+	Done
+)
+
 type Request struct {
 	RequestLine RequestLine
+	state       ParserState
 }
 
 type RequestLine struct {
@@ -31,49 +41,111 @@ type RequestLine struct {
 	Method        string
 }
 
-func RequestFromReader(r io.Reader) (*Request, error) {
-	// Use a scanner or bufio.Reader to get only the first line
+func (rl RequestLine) String() string {
+	return fmt.Sprintf("Request line:\n- Method: %s\n- Target: %s\n- Version: %s",
+		rl.Method,
+		rl.RequestTarget,
+		rl.HttpVersion,
+	)
+}
 
-	reader := bufio.NewReader(r)
-	line, err := reader.ReadString('\n')
+func (r *Request) parse(data []byte) (int, error) {
+
+	requestLine, err, consumed := parseRequestLine(string(data))
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 
-	// 2. Clean up the line (remove \r\n)
-	line = strings.TrimSpace(line)
-	parts := strings.Split(line, " ")
+	if requestLine != nil {
+		r.RequestLine = *requestLine
+		r.state = Done
+	}
+
+	return consumed, nil
+}
+
+func RequestFromReader(r io.Reader) (*Request, error) {
+	output := &Request{state: Initialized}
+	// This buffer accumulates data across multiple Read calls
+	var accumulated []byte
+	// Temporary buffer for the current Read
+	readBuf := make([]byte, 1024)
+
+	for {
+		n, err := r.Read(readBuf)
+
+		if n > 0 {
+			// Read
+			accumulated = append(accumulated, readBuf[:n]...)
+
+			// Parse
+			consumed, parseErr := output.parse(accumulated)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+
+			// Remove the bytes we successfully parsed from our accumulator
+			if consumed > 0 {
+				accumulated = accumulated[consumed:]
+			}
+		}
+
+		if output.state == Done {
+			break
+		}
+
+		if err != nil {
+			if err == io.EOF {
+				// If we hit EOF but never finished the request line, it's an error
+				if output.state != Done {
+					return nil, io.ErrUnexpectedEOF
+				}
+				break
+			}
+			return nil, err
+		}
+	}
+
+	return output, nil
+}
+
+func parseRequestLine(line string) (*RequestLine, error, int) {
+	idx := strings.Index(line, "\r\n")
+	if idx == -1 {
+		// Not enough data yet, return 0 consumed and no error
+		return nil, nil, 0
+	}
+
+	totalConsumed := idx + 2
+	rawLine := line[:idx]
+
+	parts := strings.Split(rawLine, " ")
 	if len(parts) != 3 {
-		return nil, ErrMalformedRequest
+		return nil, ErrMalformedRequest, 0
 	}
 
-	// 3. Validate Method (Must be all caps)
-	if parts[0] != strings.ToUpper(parts[0]) {
-		return nil, ErrUnsupportedMethod
+	method, target, proto := parts[0], parts[1], parts[2]
+
+	if method != strings.ToUpper(method) {
+		return nil, ErrUnsupportedMethod, 0
+	}
+	if !targetRegex.MatchString(target) {
+		return nil, ErrInvalidTarget, 0
 	}
 
-	// 4. Validate Request Target (Must start with /)
-	if !targetRegex.MatchString(parts[1]) {
-		return nil, ErrInvalidTarget
-	}
-
-	// 5. Validate Protocol and Extract Version
-	versionMatch := versionRegex.FindStringSubmatch(parts[2])
+	versionMatch := versionRegex.FindStringSubmatch(proto)
 	if len(versionMatch) != 2 {
-		return nil, ErrProtocolVersion
+		return nil, ErrProtocolVersion, 0
 	}
 
 	version := versionMatch[1]
 	if version != "1.1" {
-		return nil, fmt.Errorf("%w: expected 1.1, got %s", ErrProtocolVersion, version)
+		return nil, fmt.Errorf("%w: expected 1.1, got %s", ErrProtocolVersion, version), 0
 	}
 
-	// 6. Return the Request
-	return &Request{
-		RequestLine: RequestLine{
-			Method:        parts[0],
-			RequestTarget: parts[1],
-			HttpVersion:   version,
-		},
-	}, nil
+	return &RequestLine{
+		Method:        method,
+		RequestTarget: target,
+		HttpVersion:   version,
+	}, nil, totalConsumed
 }

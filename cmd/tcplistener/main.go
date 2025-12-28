@@ -2,61 +2,10 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"net"
-	"strings"
+
+	"github.com/isparth/httpfromtcp/internal/request"
 )
-
-func getLinesChannel(f io.ReadCloser) <-chan string {
-
-	channel := make(chan string, 1)
-
-	buffer := make([]byte, 8)
-	line := ""
-
-	go func() {
-		defer f.Close()
-		defer close(channel)
-		for {
-			n, err := f.Read(buffer)
-
-			if n > 0 {
-
-				// Convert the bytes we read to a string
-				currentChunk := string(buffer[:n])
-
-				// Check if there is a newline in THIS chunk
-				i := strings.Index(currentChunk, "\n")
-
-				if i != -1 {
-					// Add everything before the \n to the line and print it.
-					line += currentChunk[:i]
-					channel <- line
-
-					line = currentChunk[i+1:]
-				} else {
-					line += currentChunk
-				}
-			}
-
-			if err != nil {
-				if err == io.EOF {
-					if line != "" {
-						channel <- line
-					}
-
-					return
-				}
-				fmt.Printf("Unexpected error: %v\n", err)
-				return
-			}
-		}
-
-	}()
-
-	return channel
-
-}
 
 func main() {
 
@@ -78,11 +27,9 @@ func main() {
 			continue
 		}
 
-		ch := getLinesChannel(conn)
+		output, err := request.RequestFromReader(conn)
 
-		for line := range ch {
-			fmt.Printf("%s\n", strings.TrimSpace(line))
-		}
+		fmt.Println(output.RequestLine)
 
 	}
 
