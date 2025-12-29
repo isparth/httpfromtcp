@@ -6,6 +6,8 @@ import (
 	"io"
 	"regexp"
 	"strings"
+
+	"github.com/isparth/httpfromtcp/internal/headers"
 )
 
 var (
@@ -24,14 +26,17 @@ var (
 type ParserState int
 
 const (
-	// StateInitialized will be 0
+	// Initialized will be 0
 	Initialized ParserState = iota
-	// StateDone will be 1
+	// ParsingHeaders will be 1
+	ParsingHeaders
+	// Done will be 2
 	Done
 )
 
 type Request struct {
 	RequestLine RequestLine
+	Headers     headers.Headers
 	state       ParserState
 }
 
@@ -51,17 +56,35 @@ func (rl RequestLine) String() string {
 
 func (r *Request) parse(data []byte) (int, error) {
 
-	requestLine, err, consumed := parseRequestLine(string(data))
-	if err != nil {
-		return 0, err
+	if r.state == Initialized {
+		requestLine, err, consumed := parseRequestLine(string(data))
+		if err != nil {
+			return 0, err
+		}
+		if requestLine != nil {
+			r.RequestLine = *requestLine
+			r.state = ParsingHeaders
+			return consumed, nil
+		}
+
 	}
 
-	if requestLine != nil {
-		r.RequestLine = *requestLine
-		r.state = Done
+	if r.state == ParsingHeaders {
+		if r.Headers == nil {
+			r.Headers = make(headers.Headers)
+		}
+		consumed, done, err := r.Headers.Parse(data)
+		if err != nil {
+			return consumed, err
+		}
+		if done {
+			r.state = Done
+		}
+		return consumed, nil
+
 	}
 
-	return consumed, nil
+	return 0, nil
 }
 
 func RequestFromReader(r io.Reader) (*Request, error) {
@@ -96,10 +119,6 @@ func RequestFromReader(r io.Reader) (*Request, error) {
 
 		if err != nil {
 			if err == io.EOF {
-				// If we hit EOF but never finished the request line, it's an error
-				if output.state != Done {
-					return nil, io.ErrUnexpectedEOF
-				}
 				break
 			}
 			return nil, err
