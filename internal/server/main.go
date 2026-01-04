@@ -1,10 +1,8 @@
 package server
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"sync/atomic"
@@ -17,12 +15,7 @@ var (
 	ErrMissingListenner = errors.New("Closed a lisner that was nil")
 )
 
-type HandlerError struct {
-	StatusCode response.StatusCode
-	Message    string
-}
-
-type Handler func(w io.Writer, req *request.Request) *HandlerError
+type Handler func(w *response.Writer, req *request.Request)
 
 type Server struct {
 	listener net.Listener
@@ -73,14 +66,6 @@ func (s *Server) listen() {
 
 }
 
-func writeHandlerError(w io.Writer, hErr *HandlerError) {
-	response.WriteStatusLine(w, hErr.StatusCode)
-
-	headers := response.GetDefaultHeaders(len(hErr.Message))
-	response.WriteHeaders(w, headers)
-	w.Write([]byte(hErr.Message))
-}
-
 func (s *Server) handle(conn net.Conn) {
 	defer conn.Close()
 
@@ -90,23 +75,6 @@ func (s *Server) handle(conn net.Conn) {
 		return
 	}
 
-	buf := new(bytes.Buffer)
-	handlerErr := s.handler(buf, req)
-
-	if handlerErr != nil {
-		writeHandlerError(conn, handlerErr)
-		return
-	}
-
-	headers := response.GetDefaultHeaders(buf.Len())
-
-	if err := response.WriteStatusLine(conn, response.StatusOK); err != nil {
-		return
-	}
-	if err := response.WriteHeaders(conn, headers); err != nil {
-		return
-	}
-
-	// Write the actual body data collected in the buffer
-	conn.Write(buf.Bytes())
+	writer := response.NewWriter(conn)
+	s.handler(writer, req)
 }

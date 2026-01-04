@@ -57,6 +57,13 @@ func (h *Headers) Get(key string) string {
 	return (*h)[strings.ToLower(key)]
 }
 
+func (h Headers) Set(key, value string) {
+	if h == nil {
+		return
+	}
+	h[strings.ToLower(key)] = value
+}
+
 func (h Headers) String() string {
 	if len(h) == 0 {
 		return "Headers:\n- (none)"
