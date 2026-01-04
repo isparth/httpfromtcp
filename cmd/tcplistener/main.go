@@ -29,7 +29,7 @@ func main() {
 
 		output, err := request.RequestFromReader(conn)
 
-		fmt.Println(output.RequestLine)
+		fmt.Println(output)
 
 	}
 

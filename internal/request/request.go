@@ -5,16 +5,20 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/isparth/httpfromtcp/internal/headers"
 )
 
 var (
-	ErrMalformedRequest  = errors.New("malformed request line")
-	ErrUnsupportedMethod = errors.New("invalid or non-uppercase method")
-	ErrInvalidTarget     = errors.New("invalid request target path")
-	ErrProtocolVersion   = errors.New("unsupported protocol version")
+	ErrMalformedRequest       = errors.New("malformed request line")
+	ErrUnsupportedMethod      = errors.New("invalid or non-uppercase method")
+	ErrInvalidTarget          = errors.New("invalid request target path")
+	ErrProtocolVersion        = errors.New("unsupported protocol version")
+	ErrIncorrectContextLength = errors.New("Context length cannot be converted to an int")
+	ErrContextLengthExceeded  = errors.New("Body has more data than specified by the content length")
+	ErrContextSmall           = errors.New("Body has less data than specified by the content length")
 )
 
 var (
@@ -28,15 +32,15 @@ type ParserState int
 const (
 	// Initialized will be 0
 	Initialized ParserState = iota
-	// ParsingHeaders will be 1
 	ParsingHeaders
-	// Done will be 2
+	ParsingBody
 	Done
 )
 
 type Request struct {
 	RequestLine RequestLine
 	Headers     headers.Headers
+	Body        []byte
 	state       ParserState
 }
 
@@ -54,34 +58,83 @@ func (rl RequestLine) String() string {
 	)
 }
 
-func (r *Request) parse(data []byte) (int, error) {
+func (r Request) String() string {
+	return fmt.Sprintf("%s\n%s\nBody:\n%s\n", r.RequestLine.String(), r.Headers.String(), string(r.Body))
+}
 
-	if r.state == Initialized {
+func (r *Request) parse(data []byte) (int, error) {
+	switch r.state {
+
+	case Initialized:
 		requestLine, err, consumed := parseRequestLine(string(data))
 		if err != nil {
 			return 0, err
 		}
-		if requestLine != nil {
-			r.RequestLine = *requestLine
-			r.state = ParsingHeaders
-			return consumed, nil
+		if requestLine == nil {
+			return 0, nil
 		}
 
-	}
+		r.RequestLine = *requestLine
+		r.state = ParsingHeaders
+		return consumed, nil
 
-	if r.state == ParsingHeaders {
+	case ParsingHeaders:
 		if r.Headers == nil {
 			r.Headers = make(headers.Headers)
 		}
+
 		consumed, done, err := r.Headers.Parse(data)
 		if err != nil {
 			return consumed, err
 		}
-		if done {
-			r.state = Done
+		if !done {
+			return consumed, nil
 		}
+
+		// Headers done: missing Content-Length => 0
+		clStr := r.Headers.Get("Content-Length")
+		if clStr == "" {
+			r.state = Done
+			return consumed, nil
+		}
+
+		contentLength, err := strconv.Atoi(clStr)
+		if err != nil || contentLength < 0 {
+			return consumed, ErrIncorrectContextLength
+		}
+
+		if contentLength == 0 {
+			r.state = Done
+			return consumed, nil
+		}
+
+		r.state = ParsingBody
 		return consumed, nil
 
+	case ParsingBody:
+		clStr := r.Headers.Get("Content-Length")
+		contentLength, err := strconv.Atoi(clStr)
+		if err != nil || contentLength < 0 {
+			return 0, ErrIncorrectContextLength
+		}
+
+		r.Body = append(r.Body, data...)
+
+		if len(r.Body) > contentLength {
+			return len(data), fmt.Errorf(
+				"%w: expected %d, got %d",
+				ErrContextLengthExceeded, contentLength, len(r.Body),
+			)
+		}
+
+		if len(r.Body) == contentLength {
+			r.state = Done
+		}
+
+		return len(data), nil
+
+	case Done:
+		return 0, nil
 	}
 
 	return 0, nil
@@ -92,7 +145,7 @@ func RequestFromReader(r io.Reader) (*Request, error) {
 	// This buffer accumulates data across multiple Read calls
 	var accumulated []byte
 	// Temporary buffer for the current Read
-	readBuf := make([]byte, 1024)
+	readBuf := make([]byte, 8)
 
 	for {
 		n, err := r.Read(readBuf)
@@ -101,14 +154,15 @@ func RequestFromReader(r io.Reader) (*Request, error) {
 			// Read
 			accumulated = append(accumulated, readBuf[:n]...)
 
-			// Parse
-			consumed, parseErr := output.parse(accumulated)
-			if parseErr != nil {
-				return nil, parseErr
-			}
-
-			// Remove the bytes we successfully parsed from our accumulator
-			if consumed > 0 {
+			// Parse as much as possible from accumulated bytes.
+			for len(accumulated) > 0 {
+				consumed, parseErr := output.parse(accumulated)
+				if parseErr != nil {
+					return nil, parseErr
+				}
+				if consumed == 0 {
+					break
+				}
 				accumulated = accumulated[consumed:]
 			}
 		}
@@ -119,6 +173,7 @@ func RequestFromReader(r io.Reader) (*Request, error) {
 
 		if err != nil {
 			if err == io.EOF {
+
 				break
 			}
 			return nil, err

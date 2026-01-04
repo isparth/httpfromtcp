@@ -53,6 +53,25 @@ func (h *Headers) Parse(data []byte) (int, bool, error) {
 
 }
 
+func (h *Headers) Get(key string) string {
+	return (*h)[strings.ToLower(key)]
+}
+
+func (h Headers) String() string {
+	if len(h) == 0 {
+		return "Headers:\n- (none)"
+	}
+
+	var b strings.Builder
+	b.WriteString("Headers:\n")
+
+	for k, v := range h {
+		fmt.Fprintf(&b, "- %s: %s\n", k, v)
+	}
+
+	return b.String()
+}
+
 func parseSingleHeader(line string) (string, string, error) {
 	rawLine := strings.TrimSpace(line)
 	if !headerRegex.MatchString(rawLine) {
