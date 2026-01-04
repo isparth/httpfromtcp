@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"log"
@@ -35,6 +36,7 @@ func main() {
 			headers := response.GetDefaultHeaders(0)
 			delete(headers, "content-length")
 			headers.Set("Transfer-Encoding", "chunked")
+			headers.Set("Trailer", "X-Content-SHA256, X-Content-Length")
 			if contentType := resp.Header.Get("Content-Type"); contentType != "" {
 				headers.Set("Content-Type", contentType)
 			}
@@ -47,10 +49,12 @@ func main() {
 			}
 
 			buf := make([]byte, 1024)
+			var body []byte
 			for {
 				n, readErr := resp.Body.Read(buf)
 				if n > 0 {
 					fmt.Println(n)
+					body = append(body, buf[:n]...)
 					if _, err := w.WriteChunkedBody(buf[:n]); err != nil {
 						return
 					}
@@ -63,7 +67,11 @@ func main() {
 				}
 			}
 
-			_, _ = w.WriteChunkedBodyDone()
+			sum := sha256.Sum256(body)
+			trailers := response.Headers{}
+			trailers.Set("X-Content-SHA256", fmt.Sprintf("%x", sum))
+			trailers.Set("X-Content-Length", fmt.Sprintf("%d", len(body)))
+			_ = w.WriteTrailers(trailers)
 			return
 		}
 

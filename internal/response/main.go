@@ -120,6 +120,24 @@ func (w *Writer) WriteChunkedBodyDone() (int, error) {
 	return w.w.Write([]byte("0\r\n\r\n"))
 }
 
+func (w *Writer) WriteTrailers(h headers.Headers) error {
+	if w.state != writerStateHeadersWritten && w.state != writerStateChunked {
+		return ErrInvalidWriterState
+	}
+	w.state = writerStateDone
+	if _, err := w.w.Write([]byte("0\r\n")); err != nil {
+		return err
+	}
+	for key, value := range h {
+		line := fmt.Sprintf("%s: %s\r\n", key, value)
+		if _, err := w.w.Write([]byte(line)); err != nil {
+			return err
+		}
+	}
+	_, err := w.w.Write([]byte("\r\n"))
+	return err
+}
+
 func statusText(statusCode StatusCode) string {
 	switch statusCode {
 	case StatusOK:
